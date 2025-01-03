@@ -6,7 +6,8 @@ import sqlite3
 from pmtiles.writer import write
 from pmtiles.reader import Reader, MmapSource, all_tiles
 from .tile import zxy_to_tileid, tileid_to_zxy, TileType, Compression
-
+from string import Template
+import urllib.request
 
 def mbtiles_to_header_json(mbtiles_metadata):
     header = {}
@@ -27,18 +28,7 @@ def mbtiles_to_header_json(mbtiles_metadata):
     header["center_zoom"] = int(center[2])
 
     tile_format = mbtiles_metadata["format"]
-    if tile_format == "pbf":
-        header["tile_type"] = TileType.MVT
-    elif tile_format == "png":
-        header["tile_type"] = TileType.PNG
-    elif tile_format == "jpeg":
-        header["tile_type"] = TileType.JPEG
-    elif tile_format == "webp":
-        header["tile_type"] = TileType.WEBP
-    elif tile_format == "avif":
-        header["tile_type"] = TileType.AVIF
-    else:
-        header["tile_type"] = TileType.UNKNOWN
+    header["tile_type"] = TileType.from_ext(tile_format)
 
     if tile_format == "pbf" or mbtiles_metadata.get("compression") == "gzip":
         header["tile_compression"] = Compression.GZIP
@@ -220,7 +210,7 @@ def disk_to_pmtiles(directory_path, output, maxzoom, **kwargs):
     # Collect a set of all tile IDs
     z_set = []  # List of all zoom levels for auto-detecting maxzoom.
     tileid_path_set = []  # List of tile (id, filepath) pairs
-    zoom_dirs = get_dirs(directory_path)
+    zoom_dirs = _get_dirs(directory_path)
     zoom_dirs.sort(key=len)
     try:
         collect_max = int(maxzoom)
@@ -245,7 +235,7 @@ def disk_to_pmtiles(directory_path, output, maxzoom, **kwargs):
         if verbose:
             print(" Searching for tiles at z=%s ..." % (z), end="", flush=True)
         count = 0
-        for row_dir in get_dirs(os.path.join(directory_path, zoom_dir)):
+        for row_dir in _get_dirs(os.path.join(directory_path, zoom_dir)):
             if scheme == 'ags':
                 y = int(row_dir.replace("R", ""), 16)
             elif scheme == 'gwc':
@@ -260,13 +250,13 @@ def disk_to_pmtiles(directory_path, output, maxzoom, **kwargs):
                 else:
                     file_name, _ = current_file.split('.',1)
                     if scheme == 'tms':
-                        y = flip_y(z, int(file_name))
+                        y = _flip_y(z, int(file_name))
                     elif scheme == 'ags':
                         x = int(file_name.replace("C", ""), 16)
                     elif scheme == 'gwc':
                         x, y = file_name.split('_')
                         x = int(x)
-                        y = flip_y(z, int(y))
+                        y = _flip_y(z, int(y))
                     elif scheme == 'zyx':
                         x = int(file_name)
                     else:
@@ -319,8 +309,50 @@ def disk_to_pmtiles(directory_path, output, maxzoom, **kwargs):
         pmtiles_header["max_zoom"] = maxzoom
         result = writer.finalize(pmtiles_header, pmtiles_metadata)
 
+def http_xyz_to_pmtiles(input, output, maxzoom, tile_format = None, **kwargs):
+    """
+    Converts an HTTP URL template of z/x/y tiles to PMTiles.
+    """
+    if "{x}" not in input or "{y}" not in input or "{z}" not in input:
+        raise ValueError("Input URL template must contain {x}, {y}, and {z} placeholders")
 
-def get_dirs(path):
+    input = input.replace("{z}", "${z}").replace("{x}", "${x}").replace("{y}", "${y}")
+    input_template = Template(input)
+
+    if tile_format is None:
+        tile_format = input.split('.')[-1]
+
+    pmtiles_header = {
+        "min_lon_e7": -1800000000,
+        "min_lat_e7": -900000000,
+        "max_lon_e7": 1800000000,
+        "max_lat_e7": 900000000,
+        "center_lon_e7": 0,
+        "center_lat_e7": 0,
+        "center_zoom": 0,
+        "tile_type": TileType.from_ext(tile_format),
+        "tile_compression": Compression.NONE
+    }
+
+    is_pbf = pmtiles_header["tile_type"] == TileType.MVT
+
+    with write(output) as writer:
+        for z in range(maxzoom + 1):
+            for x in range(2**z):
+                for y in range(2**z):
+                    tileid = zxy_to_tileid(z, x, y)
+                    url = input_template.substitute(x=x, y=y, z=z)
+                    with urllib.request.urlopen(url) as response:
+                        tile_data = response.read()
+                    # force gzip compression only for vector
+                    if is_pbf and tile_data[0:2] != b"\x1f\x8b":
+                        tile_data = gzip.compress(tile_data)
+                    writer.write_tile(tileid, tile_data)
+
+        result = writer.finalize(pmtiles_header, {"source": input})
+
+
+def _get_dirs(path):
     """'get_dirs' from mbutil
 
     Copyright (c), Development Seed
@@ -332,7 +364,7 @@ def get_dirs(path):
         if os.path.isdir(os.path.join(path, name))]
 
 
-def flip_y(zoom, y):
+def _flip_y(zoom, y):
     """'flip_y' from mbutil
 
     Copyright (c), Development Seed

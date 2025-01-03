@@ -144,6 +144,19 @@ class TileType(Enum):
     WEBP = 4
     AVIF = 5
 
+    @classmethod
+    def from_ext(cls, file_ext):
+        if file_ext == "mvt" or file_ext == "pbf":
+            return cls.MVT
+        if file_ext == "png":
+            return cls.PNG
+        if file_ext == "jpg" or file_ext == "jpeg":
+            return cls.JPEG
+        if file_ext == "webp":
+            return cls.WEBP
+        if file_ext == "avif":
+            return cls.AVIF
+        return cls.UNKNOWN
 
 def deserialize_directory(buf):
     b_io = io.BytesIO(gzip.decompress(buf))
