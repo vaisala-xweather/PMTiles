@@ -20,5 +20,5 @@ setuptools.setup(
         "Operating System :: OS Independent",
     ],
     scripts=["bin/pmtiles-convert", "bin/pmtiles-serve", "bin/pmtiles-show"],
-    requires_python=">=3.0",
+    requires_python=">=3.2",
 )
