@@ -17,7 +17,8 @@ parser = argparse.ArgumentParser(
     description="Convert between PMTiles and other archive formats."
 )
 parser.add_argument(
-    "input", help="Input .mbtiles, .pmtiles, URL template (with {z}, {x}, {y} variables), or directory"
+    "input",
+    help="Input .mbtiles, .pmtiles, URL template (with {z}, {x}, {y} variables), or directory",
 )
 parser.add_argument("output", help="Output .mbtiles, .pmtiles, or directory")
 parser.add_argument(
@@ -40,6 +41,12 @@ parser.add_argument(
     "--verbose",
     help="Print progress when converting a directory to .pmtiles.",
     action="store_true",
+)
+parser.add_argument(
+    "--concurrency",
+    help="Number of concurrent threads to use for downloading tiles.",
+    type=int,
+    default=1,
 )
 args = parser.parse_args()
 
@@ -66,6 +73,8 @@ elif (
         output=args.output,
         maxzoom=int(args.maxzoom),
         tile_format=args.tile_format,
+        concurrency=args.concurrency,
+        verbose=args.verbose,
     )
 
 elif args.input.endswith(".pmtiles") and args.output.endswith(".mbtiles"):

@@ -1,13 +1,21 @@
 # pmtiles to files
+from functools import reduce
 import gzip
 import json
 import os
 import sqlite3
+import threading
 from pmtiles.writer import write
 from pmtiles.reader import Reader, MmapSource, all_tiles
 from .tile import zxy_to_tileid, tileid_to_zxy, TileType, Compression
 from string import Template
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+try:
+    from tqdm import tqdm
+except ImportError:
+    def tqdm(iterable, **kwargs):
+        return iterable
 
 def mbtiles_to_header_json(mbtiles_metadata):
     header = {}
@@ -309,7 +317,7 @@ def disk_to_pmtiles(directory_path, output, maxzoom, **kwargs):
         pmtiles_header["max_zoom"] = maxzoom
         result = writer.finalize(pmtiles_header, pmtiles_metadata)
 
-def http_xyz_to_pmtiles(input, output, maxzoom, tile_format = None, **kwargs):
+def http_xyz_to_pmtiles(input, output, maxzoom, tile_format=None, concurrency=1, verbose=False, **kwargs):
     """
     Converts an HTTP URL template of z/x/y tiles to PMTiles.
     """
@@ -336,18 +344,35 @@ def http_xyz_to_pmtiles(input, output, maxzoom, tile_format = None, **kwargs):
 
     is_pbf = pmtiles_header["tile_type"] == TileType.MVT
 
+
     with write(output) as writer:
-        for z in range(maxzoom + 1):
-            for x in range(2**z):
-                for y in range(2**z):
-                    tileid = zxy_to_tileid(z, x, y)
-                    url = input_template.substitute(x=x, y=y, z=z)
-                    with urllib.request.urlopen(url) as response:
-                        tile_data = response.read()
-                    # force gzip compression only for vector
-                    if is_pbf and tile_data[0:2] != b"\x1f\x8b":
-                        tile_data = gzip.compress(tile_data)
-                    writer.write_tile(tileid, tile_data)
+        job_blocker = threading.Semaphore(concurrency * 2)
+
+        def fetch_and_write_tile(z, x, y):
+            tileid = zxy_to_tileid(z, x, y)
+            url = input_template.substitute(x=x, y=y, z=z)
+            with urllib.request.urlopen(url) as response:
+                tile_data = response.read()
+            # force gzip compression only for vector
+            if is_pbf and tile_data[0:2] != b"\x1f\x8b":
+                tile_data = gzip.compress(tile_data)
+            writer.write_tile(tileid, tile_data)
+            job_blocker.release()
+
+        def tiles(maxzoom):
+            for z in range(maxzoom + 1):
+                for x in range(2**z):
+                    for y in range(2**z):
+                        yield z, x, y
+
+
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            tile_gen = tiles(maxzoom)
+            if verbose:
+                tile_gen = tqdm(tile_gen, total=reduce(lambda x, y: x + 2 ** (2*y), range(maxzoom + 1), 0), desc="Fetching tiles")
+            for z, x, y in tile_gen:
+                job_blocker.acquire()
+                executor.submit(fetch_and_write_tile, z, x, y)
 
         result = writer.finalize(pmtiles_header, {"source": input})
 
